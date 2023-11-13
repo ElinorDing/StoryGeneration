@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 import nltk
 nltk.download('punkt')
+from t5ForStoryGeneration import t5ForStoryGeneration
 
 # if torch.cuda.is_available():
 #     device = torch.device("cuda")
@@ -21,7 +22,7 @@ nltk.download('punkt')
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 data_path = "/root/StoryGeneration/FinalDataset/dataset.csv"
-checkpoint = "t5-large"
+checkpoint = "t5-small"
 output_dir = '/root/StoryGeneration/Code/output_dir'
 
 read_dataset = pd.read_csv(data_path)
@@ -39,7 +40,7 @@ hg_test_dataset = Dataset.from_pandas(test_dataset)
 
 tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 # task_prefix = "Generate a Story about: "
-task_prefix = "Write a story based on these keywords:"
+task_prefix = "Write a Social Story based on these keywords:"
 # Function to tokenize the training and testing dataset
 def tokenize_function(data):
     input_with_prefix = [task_prefix + inp for inp in data["keywords"]]
@@ -60,9 +61,10 @@ tokenized_test_dataset.set_format("torch")
 
 # Load the pretrained model
 # model = AutoModelForCausalLM.from_pretrained(checkpoint).to(device)  # GPT2
-model = T5ForConditionalGeneration.from_pretrained(checkpoint).to(device) # T5 with language modeling head
+# model = T5ForConditionalGeneration.from_pretrained(checkpoint).to(device) # T5 with language modeling head
 # model = T5Model.from_pretrained(checkpoint).to(device) # T5 without any specific head on top 
 
+model = t5ForStoryGeneration(checkpoint=checkpoint).to(device)
 
 
 # We create a data_collator that will dynamically pad our inputs
@@ -119,7 +121,9 @@ for epoch in range(epochs):
         human_readable_train_input = tokenizer.batch_decode(input_ids.tolist(), skip_special_tokens=True)
         attention_mask = batch['attention_mask'].to(device)
         labels = batch['labels'].to(device)
-        outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
+        labels = model._shift_right(labels)
+        outputs = model(input_ids, attention_mask, labels)
+        last_hidden_state = output.last_hidden_state
         loss = outputs.loss
         loss.backward() #  compute gradient
         optimizer.step() # update weights to reduce loss
