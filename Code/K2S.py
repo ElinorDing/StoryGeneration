@@ -8,17 +8,21 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
+import nltk
+nltk.download('punkt')
 
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-if torch.backends.mps.is_available():
-    device = torch.device("mps")
-else:
-    device = torch.device("cpu")
+# if torch.cuda.is_available():
+#     device = torch.device("cuda")
+# if torch.backends.mps.is_available():
+#     device = torch.device("mps")
+# else:
+#     device = torch.device("cpu")
 
-data_path = "/Users/vonnet/Master/StoryGeneration/FinalDataset/dataset.csv"
-checkpoint = "t5-base"
-output_dir = '/Users/vonnet/Master/StoryGeneration/Code/output_dir'
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+data_path = "/root/StoryGeneration/FinalDataset/dataset.csv"
+checkpoint = "t5-large"
+output_dir = '/root/StoryGeneration/Code/output_dir'
 
 read_dataset = pd.read_csv(data_path)
 
@@ -34,11 +38,12 @@ hg_test_dataset = Dataset.from_pandas(test_dataset)
 # AutoTokenizer.from_pretrained() will automatically download the vocabulary from the pretrained model hub if it has not been downloaded before
 
 tokenizer = AutoTokenizer.from_pretrained(checkpoint)
-task_prefix = "Create a Social Story about: "
+# task_prefix = "Generate a Story about: "
+task_prefix = "Write a story based on these keywords:"
 # Function to tokenize the training and testing dataset
 def tokenize_function(data):
     input_with_prefix = [task_prefix + inp for inp in data["keywords"]]
-    model_input = tokenizer(input_with_prefix, max_length=12, padding="max_length", truncation=True, return_tensors="pt")
+    model_input = tokenizer(input_with_prefix, max_length=30, padding="max_length", truncation=True, return_tensors="pt")
     labels = tokenizer(data["story"], max_length=300, padding="max_length", truncation=True, return_tensors="pt").input_ids
     labels[labels == tokenizer.pad_token_id] = -100
     
@@ -63,7 +68,7 @@ model = T5ForConditionalGeneration.from_pretrained(checkpoint).to(device) # T5 w
 # We create a data_collator that will dynamically pad our inputs
 data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
-epochs = 1
+epochs = 3
 batch_size = 4
 criterion = nn.CrossEntropyLoss()
 optimizer = AdamW(model.parameters(), lr=5e-5) # Adam with proper weight decay
@@ -77,12 +82,41 @@ scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_s
 train_dataloader = DataLoader(tokenized_train_dataset, batch_size=batch_size, shuffle=True, collate_fn=data_collator)
 test_dataloader = DataLoader(tokenized_test_dataset, batch_size=batch_size, shuffle=True, collate_fn=data_collator)
 
+# Load a metric from the Hugging Face datasets library
+metric = load_metric("rouge")
+# rouge = evaluate.load('rouge')
+# # set evaluate metric as HuggingFace Trainer does not evaluate the model automatically during training
+# # Which evaluation metric to use for our task
+# # Accuracy can be used when dataset are balanced
+
+
+def compute_metrics(predictions, labels):
+
+    decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+    # Rouge expects a newline after each sentence
+    decoded_preds = ["\n".join(nltk.sent_tokenize(pred.strip())) for pred in decoded_preds]
+    decoded_labels = ["\n".join(nltk.sent_tokenize(label.strip())) for label in decoded_labels]
+
+    # result = rouge.compute(predictions=decoded_preds, references=decoded_labels)
+
+    result = metric.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
+    # Extract a few results
+    result = {key: value.mid.fmeasure * 100 for key, value in result.items()}
+    return result
+
+    # predictions = np.argmax(predictions, axis=1)
+    # return metric.compute(predictions=predictions, references=labels)
+
+
 progress_bar_train = tqdm(range(train_steps))
 progress_bar_test = tqdm(range(epochs * len(test_dataloader) ))
 for epoch in range(epochs):
     model.train()
     for batch in train_dataloader:
         input_ids = batch['input_ids'].to(device)
+        human_readable_train_input = tokenizer.batch_decode(input_ids.tolist(), skip_special_tokens=True)
         attention_mask = batch['attention_mask'].to(device)
         labels = batch['labels'].to(device)
         outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
@@ -98,32 +132,18 @@ for epoch in range(epochs):
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
-            # human_readable_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+            human_readable_eval_inputs = tokenizer.batch_decode(input_ids.tolist(), skip_special_tokens=True)
+            print('human_reable_inputs: ', human_readable_eval_inputs)
             output_id = model.generate(input_ids, attention_mask=attention_mask, max_length=300)
             output = tokenizer.batch_decode(output_id, skip_special_tokens=True)
+            # Ensure labels are on CPU and check their values and type
+            labels[labels == -100] = tokenizer.pad_token_id
+            labels_cpu = labels.cpu()
+            labels_list = labels_cpu.tolist()
+            human_readable_eval_label = tokenizer.batch_decode(labels_list, skip_special_tokens=True)
+            print('human_reable_outputs: ', output)
+            result = compute_metrics(output_id, labels)
+            rouge_L = result['rougeL']
+            print('rouge_L: ', rouge_L)
             progress_bar_test.update(1)
-            
-
-# # set evaluate metric as HuggingFace Trainer does not evaluate the model automatically during training
-# # Which evaluation metric to use for our task
-# # Accuracy can be used when dataset are balanced
-
-# Load a metric from the Hugging Face datasets library
-metric = load_metric("rouge")
-
-def compute_metrics(eval_pred):
-    predictions, labels = eval_pred
-    decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
-    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
-
-    # Rouge expects a newline after each sentence
-    decoded_preds = ["\n".join(nltk.sent_tokenize(pred.strip())) for pred in decoded_preds]
-    decoded_labels = ["\n".join(nltk.sent_tokenize(label.strip())) for label in decoded_labels]
-
-    result = metric.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
-    # Extract a few results
-    result = {key: value.mid.fmeasure * 100 for key, value in result.items()}
-    return {k: v for k, v in result.items()}
-
-    # predictions = np.argmax(predictions, axis=1)
-    # return metric.compute(predictions=predictions, references=labels)
