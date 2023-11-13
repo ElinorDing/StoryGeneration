@@ -1,3 +1,7 @@
 gensim
 contractions
 nltk
+transformers
+datasets
+evaluate
+torch
