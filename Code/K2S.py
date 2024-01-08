@@ -138,7 +138,7 @@ for epoch in range(epochs):
             labels = batch['labels'].to(device)
 
             human_readable_eval_inputs = tokenizer.batch_decode(input_ids.tolist(), skip_special_tokens=True)
-            print('human_reable_inputs: ', human_readable_eval_inputs)
+            print('human_readable_inputs: ', human_readable_eval_inputs)
             output_id = model.generate(input_ids, attention_mask=attention_mask, max_length=300)
             output = tokenizer.batch_decode(output_id, skip_special_tokens=True)
             # Ensure labels are on CPU and check their values and type
